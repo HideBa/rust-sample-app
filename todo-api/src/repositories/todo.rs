@@ -185,6 +185,7 @@ pub trait TodoRepository: Clone + std::marker::Send + std::marker::Sync + 'stati
 struct TodoFromRow {
     id: i32,
     text: String,
+    note: Option<String>,
     completed: bool,
 }
 
@@ -192,6 +193,7 @@ struct TodoFromRow {
 struct TodoWithLabelFromRow {
     id: i32,
     text: String,
+    note: Option<String>,
     completed: bool,
     label_id: Option<i32>,
     label_name: Option<String>,
@@ -201,6 +203,7 @@ struct TodoWithLabelFromRow {
 pub struct TodoEntity {
     pub id: i32,
     pub text: String,
+    pub note: Option<String>,
     pub completed: bool,
     pub labels: Vec<Label>,
 }
@@ -234,6 +237,7 @@ fn fold_entities(rows: Vec<TodoWithLabelFromRow>) -> Vec<TodoEntity> {
         accum.push(TodoEntity {
             id: row.id,
             text: row.text.clone(),
+            note: row.note.clone(),
             completed: row.completed,
             labels,
         });
@@ -246,14 +250,16 @@ pub struct CreateTodo {
     #[validate(length(min = 1, message = "Can not be empty"))]
     #[validate(length(max = 100, message = "Over text length"))]
     text: String,
+    note: Option<String>,
     labels: Vec<i32>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, Validate)]
 pub struct UpdateTodo {
     #[validate(length(min = 1, message = "Can not be empty"))]
-    #[validate(length(max = 100, message = "Over text length"))]
+    #[validate(length(max = 100, message = "Over text slength"))]
     text: Option<String>,
+    note: Option<String>,
     completed: Option<bool>,
     labels: Option<Vec<i32>>,
 }
@@ -280,6 +286,7 @@ mod test {
             TodoWithLabelFromRow {
                 id: 1,
                 text: String::from("todo 1"),
+                note: Some(String::from("note1")),
                 completed: false,
                 label_id: Some(label_1.id),
                 label_name: Some(label_1.name.clone()),
@@ -288,12 +295,14 @@ mod test {
                 id: 1,
                 text: String::from("todo 1"),
                 completed: false,
+                note: Some(String::from("note1")),
                 label_id: Some(label_2.id),
                 label_name: Some(label_2.name.clone()),
             },
             TodoWithLabelFromRow {
                 id: 2,
                 text: String::from("todo 2"),
+                note: Some(String::from("note2")),
                 completed: false,
                 label_id: Some(label_1.id),
                 label_name: Some(label_1.name.clone()),
@@ -306,12 +315,14 @@ mod test {
                 TodoEntity {
                     id: 1,
                     text: String::from("todo 1"),
+                    note: Some(String::from("note1")),
                     completed: false,
                     labels: vec![label_1.clone(), label_2.clone()],
                 },
                 TodoEntity {
                     id: 2,
                     text: String::from("todo 2"),
+                    note: Some(String::from("note2")),
                     completed: false,
                     labels: vec![label_1.clone()],
                 },
@@ -357,10 +368,15 @@ returning *
 
         let repository = TodoRepositoryForDb::new(pool.clone());
         let todo_text = "[crud_scenario] text";
+        let todo_note = Some("[crud_scenario] note");
 
         // create
         let created = repository
-            .create(CreateTodo::new(todo_text.to_string(), vec![label_1.id]))
+            .create(CreateTodo::new(
+                todo_text.to_string(),
+                todo_note.map(|n| n.to_string()),
+                vec![label_1.id],
+            ))
             .await
             .expect("[create] returned Err");
         assert_eq!(created.text, todo_text);
@@ -381,11 +397,13 @@ returning *
 
         // update
         let updated_text = "[crud_scenario] updated text";
+        let updated_note = "[crud_scenario] updated note";
         let todo = repository
             .update(
                 todo.id,
                 UpdateTodo {
                     text: Some(updated_text.to_string()),
+                    note: Some(updated_note.to_string()),
                     completed: Some(true),
                     labels: Some(vec![]),
                 },
@@ -440,10 +458,11 @@ pub mod test_utils {
     use super::*;
 
     impl TodoEntity {
-        pub fn new(id: i32, text: String, labels: Vec<Label>) -> Self {
+        pub fn new(id: i32, text: String, note: Option<String>, labels: Vec<Label>) -> Self {
             Self {
                 id,
                 text,
+                note,
                 completed: false,
                 labels,
             }
@@ -451,8 +470,8 @@ pub mod test_utils {
     }
 
     impl CreateTodo {
-        pub fn new(text: String, labels: Vec<i32>) -> Self {
-            Self { text, labels }
+        pub fn new(text: String, note: Option<String>, labels: Vec<i32>) -> Self {
+            Self { text, note, labels }
         }
     }
 
@@ -496,7 +515,7 @@ pub mod test_utils {
             let mut store = self.write_store_ref();
             let id = (store.len() + 1) as i32;
             let labels = self.resolve_labels(payload.labels);
-            let todo = TodoEntity::new(id, payload.text.clone(), labels);
+            let todo = TodoEntity::new(id, payload.text.clone(), payload.note.clone(), labels);
             store.insert(id, todo.clone());
             Ok(todo)
         }
@@ -519,6 +538,7 @@ pub mod test_utils {
             let mut store = self.write_store_ref();
             let todo = store.get(&id).context(RepositoryError::NotFound(id))?;
             let text = payload.text.unwrap_or(todo.text.clone());
+            let note = payload.note.map(|n| n.clone());
             let completed = payload.completed.unwrap_or(todo.completed);
             let labels = match payload.labels {
                 Some(label_ids) => self.resolve_labels(label_ids),
@@ -527,6 +547,7 @@ pub mod test_utils {
             let todo = TodoEntity {
                 id,
                 text,
+                note,
                 completed,
                 labels,
             };
@@ -548,6 +569,7 @@ pub mod test_utils {
         #[tokio::test]
         async fn todo_crud_scenario() {
             let text = "todo text".to_string();
+            let note = Some("todo note".to_string());
             let id = 1;
             let label_data = Label {
                 id: 1,
@@ -557,6 +579,7 @@ pub mod test_utils {
             let expected = TodoEntity {
                 id,
                 text: text.clone(),
+                note: note.clone(),
                 completed: false,
                 labels: labels.clone(),
             };
@@ -569,7 +592,7 @@ pub mod test_utils {
             let labels = vec![label_data.clone()];
             let repository = TodoRepositoryForMemory::new(labels.clone());
             let todo = repository
-                .create(CreateTodo::new(text, vec![label_data.id]))
+                .create(CreateTodo::new(text, note, vec![label_data.id]))
                 .await
                 .expect("failed create todo");
             assert_eq!(expected, todo);
@@ -584,11 +607,13 @@ pub mod test_utils {
 
             // update
             let text = "update todo text".to_string();
+            let note = "update todo note".to_string();
             let todo = repository
                 .update(
                     1,
                     UpdateTodo {
                         text: Some(text.clone()),
+                        note: Some(note.clone()),
                         completed: Some(true),
                         labels: Some(vec![]),
                     },
@@ -599,6 +624,7 @@ pub mod test_utils {
                 TodoEntity {
                     id,
                     text,
+                    note: Some(note),
                     completed: true,
                     labels: vec![],
                 },
